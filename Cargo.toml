@@ -10,5 +10,5 @@ keywords = ["hashmap", "concurrent", "parking_lot", "lock", "map"]
 exclude = ["target", "Cargo.lock"]
 
 [dependencies]
-parking_lot = "0.4"
-owning_ref = "0.3"
+parking_lot = "0.7"
+owning_ref = "0.4"
