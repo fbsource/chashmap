@@ -1,6 +1,6 @@
 [package]
 name = "chashmap"
-version = "2.2.1"
+version = "2.2.2"
 authors = ["ticki <Ticki@users.noreply.github.com>"]
 description = "Fast, concurrent hash maps with extensive API."
 repository = "https://gitlab.redox-os.org/redox-os/chashmap"
