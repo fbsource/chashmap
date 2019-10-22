@@ -204,7 +204,8 @@ impl<K, V> Table<K, V> {
 
     /// Create a table with at least some capacity.
     fn with_capacity(cap: usize) -> Table<K, V> {
-        Table::new(cmp::max(MINIMUM_CAPACITY, cap * LENGTH_MULTIPLIER))
+        // The + 1 is needed to avoid losing fractional bucket to integer division.
+        Table::new(cmp::max(MINIMUM_CAPACITY, cap * MAX_LOAD_FACTOR_DENOM / MAX_LOAD_FACTOR_NUM + 1))
     }
 }
 
@@ -602,7 +603,7 @@ impl<K, V> CHashMap<K, V> {
     ///
     /// The capacity is equal to the number of entries the table can hold before reallocating.
     pub fn capacity(&self) -> usize {
-        self.buckets() * MAX_LOAD_FACTOR_NUM / MAX_LOAD_FACTOR_DENOM
+        cmp::max(MINIMUM_CAPACITY, self.buckets()) * MAX_LOAD_FACTOR_NUM / MAX_LOAD_FACTOR_DENOM
     }
 
     /// Get the number of buckets of the hash table.
@@ -677,7 +678,7 @@ impl<K, V> CHashMap<K, V> {
         }
     }
 }
-  
+
 impl<K: PartialEq + Hash, V> CHashMap<K, V> {
     /// Get the value of some key.
     ///
@@ -917,12 +918,12 @@ impl<K: PartialEq + Hash, V> CHashMap<K, V> {
     /// in order make reallocation less common.
     pub fn reserve(&self, additional: usize) {
         // Get the new length.
-        let len = self.len() + additional;
+        let len = (self.len() + additional) * LENGTH_MULTIPLIER;
         // Acquire the write lock (needed because we'll mess with the table).
         let mut lock = self.table.write();
         // Handle the case where another thread has resized the table while we were acquiring the
         // lock.
-        if lock.buckets.len() < len * LENGTH_MULTIPLIER {
+        if lock.buckets.len() < len {
             // Swap the table out with a new table of desired size (multiplied by some factor).
             let table = mem::replace(&mut *lock, Table::with_capacity(len));
             // Fill the new table with the data from the old table.
