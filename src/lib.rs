@@ -56,7 +56,7 @@ use std::borrow::Borrow;
 /// The atomic ordering used throughout the code.
 const ORDERING: atomic::Ordering = atomic::Ordering::Relaxed;
 /// The length-to-capacity factor.
-const LENGTH_MULTIPLIER: usize = 4;
+const LENGTH_MULTIPLIER: usize = 2;
 /// The maximal load factor's numerator.
 const MAX_LOAD_FACTOR_NUM: usize = 100 - 15;
 /// The maximal load factor's denominator.
