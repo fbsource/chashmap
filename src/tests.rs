@@ -12,6 +12,7 @@ use std::thread;
 use std::cell::RefCell;
 use std::sync::Arc;
 use CHashMap;
+use MAX_LOAD_FACTOR_DENOM;
 
 #[test]
 fn spam_insert() {
@@ -618,6 +619,52 @@ fn find() {
     match lock {
         None => panic!(),
         Some(v) => assert_eq!(*v, 2)
+    }
+}
+
+#[test]
+fn known_size_with_capacity_matches_shrink() {
+     for i in 0..(MAX_LOAD_FACTOR_DENOM * 4) {
+        // Setup a map where we know the number of entries we will store
+        let m = CHashMap::with_capacity(i);
+        let original_capacity = m.capacity();
+        let buckets = m.buckets();
+        assert!(i <= original_capacity, "Expected {} <= {} for {} buckets",
+            i, original_capacity, buckets);
+        for j in 0..i {
+            m.insert(j, j);
+        }
+
+        // Make sure inserting didn't increase capacity given we already knew
+        // number of entries planned on map construction
+        let grown_capacity = m.capacity();
+        assert_eq!(original_capacity,  grown_capacity,
+            " for {} inserts", i);
+
+        // Shrink it and check that capacity is the same
+        m.shrink_to_fit();
+        let shrunken_capacity = m.capacity();
+        assert_eq!(shrunken_capacity, original_capacity,
+            "Expected {} == {} ", shrunken_capacity, shrunken_capacity);
+     }
+}
+
+#[test]
+fn shrink_to_fit_after_insert() {
+    for i in 0..(MAX_LOAD_FACTOR_DENOM * 4) {
+        // Setup
+        let m = CHashMap::new();
+        for j in 0..i {
+            m.insert(j, j);
+        }
+        let original_capacity = m.capacity();
+
+        // Test
+        m.shrink_to_fit();
+        let shrunken_capacity = m.capacity();
+        assert!(shrunken_capacity <= original_capacity,
+            "Unexpected capacity after shrink given {} inserts. Expected {} <= {}",
+            i, shrunken_capacity, original_capacity );
     }
 }
 
