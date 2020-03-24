@@ -593,6 +593,44 @@ fn conflict_remove() {
     assert_eq!(*m.get(&5).unwrap(), 3);
 }
 
+fn insert_optional_remove(do_remove: bool) {
+    let m = CHashMap::with_capacity(1);
+    // Found this needed to be ~100 to reliably repeat panics in 2.2.2
+    let count = 100;
+    for i in 0..count {
+        m.insert(i, i);
+        if do_remove {
+            m.remove(&i);
+        }
+    }
+    for i in 0..count {
+        // this panics inside CHashMap with 2.2.2 if do_remove==truee
+        m.contains_key(&i);
+        // this panics inside CHashMap with 2.2.2 if do_remove==true
+        m.get(&i);
+        // this panics inside CHashMap with 2.2.2 if do_remove==true
+        m.get_mut(&i);
+        // this panics inside CHashMap with 2.2.2 if do_remove==true
+        let v = m.remove(&i);
+        // Check expectation, this doesn't panic if we get there
+        if do_remove {
+            assert_eq!(None, v);
+        } else {
+            assert_eq!(Some(i), v);
+        }
+    }
+}
+
+#[test]
+fn no_panic_in_scan_no_remove()  {
+    insert_optional_remove(false)
+}
+
+#[test]
+fn no_panic_in_scan_after_remove() {
+    insert_optional_remove(true);
+}
+
 #[test]
 fn is_empty() {
     let m = CHashMap::with_capacity(4);

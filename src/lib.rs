@@ -149,11 +149,14 @@ impl<K, V> Bucket<K, V> {
     /// Does the bucket match a given key?
     ///
     /// This returns `true` if the bucket is a KV pair with key `key`. If not, `false` is returned.
-    fn key_matches(&self, key: &K) -> bool
-    where K: PartialEq {
+    fn key_matches<Q>(&self, key: &Q) -> bool
+    where
+        K: Borrow<Q>,
+        Q: PartialEq + ?Sized,
+    {
         if let Bucket::Contains(ref candidate_key, _) = *self {
             // Check if the keys matches.
-            candidate_key == key
+            key.eq(candidate_key.borrow())
         } else {
             // The bucket isn't a KV pair, so we'll return false, since there is no key to test
             // against.
@@ -221,32 +224,6 @@ impl<K: PartialEq + Hash, V> Table<K, V> {
         hasher.finish() as usize
     }
 
-    /// Scan from the first priority of a key until a match is found.
-    ///
-    /// This scans from the first priority of `key` (as defined by its hash), until a match is
-    /// found (will wrap on end), i.e. `matches` returns `true` with the bucket as argument.
-    ///
-    /// The read guard from the RW-lock of the bucket is returned.
-    fn scan<F, Q: ?Sized>(&self, key: &Q, matches: F) -> RwLockReadGuard<Bucket<K, V>>
-    where F: Fn(&Bucket<K, V>) -> bool,  K: Borrow<Q>, Q: Hash  {
-        // Hash the key.
-        let hash = self.hash(key);
-
-        // Start at the first priority bucket, and then move upwards, searching for the matching
-        // bucket.
-        for i in 0..self.buckets.len() {
-            // Get the lock of the `i`'th bucket after the first priority bucket (wrap on end).
-            let lock = self.buckets[(hash + i) % self.buckets.len()].read();
-
-            // Check if it is a match.
-            if matches(&lock) {
-                // Yup. Return.
-                return lock;
-            }
-        }
-        panic!("`CHashMap` scan failed! No entry found.");
-    }
-
     /// Scan from the first priority of a key until a match is found (mutable guard).
     ///
     /// This is similar to `scan`, but instead of an immutable lock guard, a mutable lock guard is
@@ -303,20 +280,30 @@ impl<K: PartialEq + Hash, V> Table<K, V> {
     }
 
     /// Find a bucket with some key, or a free bucket in same cluster.
+    /// Uses `locker` to decide read vs write guard to reduce code duplication
     ///
     /// This scans for buckets with key `key`. If one is found, it will be returned. If none are
     /// found, it will return a free bucket in the same cluster.
-    fn lookup_or_free(&self, key: &K) -> RwLockWriteGuard<Bucket<K, V>> {
+    ///
+    /// Replacing at this bucket is safe as the bucket will be in the same cluster of buckets as
+    /// the first priority cluster.
+    fn lookup<'a, Q, F, G>(&'a self, key: &Q, locker: F) -> G
+        where
+            K: Borrow<Q>,
+            Q: PartialEq + Hash + ?Sized,
+            F: Fn(&'a RwLock<Bucket<K, V>>) -> G,
+            G: ops::Deref<Target=Bucket<K, V>>
+    {
         // Hash the key.
         let hash = self.hash(key);
-        // The encountered free bucket.
+        // The encountered free bucket. Tracking this avoids needing a second scan
         let mut free = None;
 
         // Start at the first priority bucket, and then move upwards, searching for the matching
         // bucket.
         for i in 0..self.buckets.len() {
             // Get the lock of the `i`'th bucket after the first priority bucket (wrap on end).
-            let lock = self.buckets[(hash + i) % self.buckets.len()].write();
+            let lock = locker(&self.buckets[(hash + i) % self.buckets.len()]);
 
             if lock.key_matches(key) {
                 // We found a match.
@@ -330,48 +317,8 @@ impl<K: PartialEq + Hash, V> Table<K, V> {
                 free = Some(lock)
             }
         }
-
-        free.expect("No free buckets found")
-    }
-
-    /// Lookup some key.
-    ///
-    /// This searches some key `key`, and returns a immutable lock guard to its bucket. If the key
-    /// couldn't be found, the returned value will be an `Empty` cluster.
-    fn lookup<Q: ?Sized>(&self, key: &Q) -> RwLockReadGuard<Bucket<K, V>> 
-        where 
-            K: Borrow<Q>, 
-            Q: PartialEq + Hash {
-        self.scan(key, |x| match *x {
-            // We'll check that the keys does indeed match, as the chance of hash collisions
-            // happening is inevitable
-            Bucket::Contains(ref candidate_key, _) if key.eq(candidate_key.borrow()) => true,
-            // We reached an empty bucket, meaning that there are no more buckets, not even removed
-            // ones, to search.
-            Bucket::Empty => true,
-            _ => false,
-        })
-    }
-
-    /// Lookup some key, mutably.
-    ///
-    /// This is similar to `lookup`, but it returns a mutable guard.
-    ///
-    /// Replacing at this bucket is safe as the bucket will be in the same cluster of buckets as
-    /// the first priority cluster.
-    fn lookup_mut<Q: ?Sized>(&self, key: &Q) -> RwLockWriteGuard<Bucket<K, V>> 
-        where 
-            K: Borrow<Q>, 
-            Q: PartialEq + Hash {
-        self.scan_mut(key, |x| match *x {
-            // We'll check that the keys does indeed match, as the chance of hash collisions
-            // happening is inevitable
-            Bucket::Contains(ref candidate_key, _) if key.eq(candidate_key.borrow()) => true,
-            // We reached an empty bucket, meaning that there are no more buckets, not even removed
-            // ones, to search.
-            Bucket::Empty => true,
-            _ => false,
-        })
+        // We expect at least one free bucket due to load factor
+        free.expect("`CHashMap` lookup failed! No entry found.")
     }
 
     /// Find a free bucket in the same cluster as some key.
@@ -690,7 +637,7 @@ impl<K: PartialEq + Hash, V> CHashMap<K, V> {
               Q: Hash + PartialEq {
         // Acquire the read lock and lookup in the table.
         if let Ok(inner) = OwningRef::new(
-            OwningHandle::new_with_fn(self.table.read(), |x| unsafe { &*x }.lookup(key))
+            OwningHandle::new_with_fn(self.table.read(), |x| unsafe { &*x }.lookup(key, |l| l.read()))
         ).try_map(|x| x.value_ref()) {
             // The bucket contains data.
             Some(ReadGuard {
@@ -714,7 +661,7 @@ impl<K: PartialEq + Hash, V> CHashMap<K, V> {
         // Acquire the write lock and lookup in the table.
         if let Ok(inner) = OwningHandle::try_new(OwningHandle::new_with_fn(
             self.table.read(),
-            |x| unsafe { &*x }.lookup_mut(key)),
+            |x| unsafe { &*x }.lookup(key, |l| l.write())),
             |x| {
                 if let &mut Bucket::Contains(_, ref mut val) = unsafe {
                     &mut *(x as *mut Bucket<K, V>)
@@ -740,7 +687,7 @@ impl<K: PartialEq + Hash, V> CHashMap<K, V> {
         // Acquire the lock.
         let lock = self.table.read();
         // Look the key up in the table
-        let bucket = lock.lookup(key);
+        let bucket = lock.lookup(key, |l| l.read());
         // Test if it is free or not.
         !bucket.is_free()
 
@@ -796,7 +743,7 @@ impl<K: PartialEq + Hash, V> CHashMap<K, V> {
         let lock = self.table.read();
         {
             // Lookup the key or a free bucket in the inner table.
-            let mut bucket = lock.lookup_or_free(&key);
+            let mut bucket = lock.lookup(&key, |l| l.write());
 
             // Replace the bucket.
             ret = mem::replace(&mut *bucket, Bucket::Contains(key, val)).value();
@@ -823,7 +770,7 @@ impl<K: PartialEq + Hash, V> CHashMap<K, V> {
         let lock = self.table.read();
         {
             // Lookup the key or a free bucket in the inner table.
-            let mut bucket = lock.lookup_or_free(&key);
+            let mut bucket = lock.lookup(&key, |l| l.write());
 
             match *bucket {
                 // The bucket had KV pair!
@@ -856,7 +803,7 @@ impl<K: PartialEq + Hash, V> CHashMap<K, V> {
         let lock = self.table.read();
         {
             // Lookup the key or a free bucket in the inner table.
-            let mut bucket = lock.lookup_or_free(&key);
+            let mut bucket = lock.lookup(&key, |l| l.write());
 
             match mem::replace(&mut *bucket, Bucket::Removed) {
                 Bucket::Contains(_, val) => if let Some(new_val) = f(Some(val)) {
@@ -895,7 +842,7 @@ impl<K: PartialEq + Hash, V> CHashMap<K, V> {
         let lock = self.table.read();
 
         // Lookup the table, mutably.
-        let mut bucket = lock.lookup_mut(&key);
+        let mut bucket = lock.lookup(&key, |l| l.write());
         // Remove the bucket.
         match &mut *bucket {
             // There was nothing to remove.
