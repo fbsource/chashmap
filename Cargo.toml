@@ -10,5 +10,5 @@ keywords = ["hashmap", "concurrent", "parking_lot", "lock", "map"]
 exclude = ["target", "Cargo.lock"]
 
 [dependencies]
-parking_lot = { version = "0.9", features = ["owning_ref"] }
+parking_lot = { version = "0.10", features = ["owning_ref"] }
 owning_ref = "0.4"
